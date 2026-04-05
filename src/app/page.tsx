@@ -7,9 +7,11 @@ import {
   fetchRepoTree,
   fetchFileContent,
   filterScannableFiles,
+  type GitHubFile,
 } from "@/lib/github";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Card,
   CardContent,
@@ -42,6 +44,13 @@ import {
   Copy,
   Check,
   Brain,
+  Folder,
+  FolderOpen,
+  ChevronRight,
+  ChevronDown,
+  Zap,
+  Pause,
+  Play,
 } from "lucide-react";
 import MarkdownRenderer from "@/components/markdown-renderer/MarkdownRenderer";
 
@@ -49,8 +58,7 @@ import MarkdownRenderer from "@/components/markdown-renderer/MarkdownRenderer";
 // Types
 // ---------------------------------------------------------------------------
 
-type AppState = "input" | "scanning" | "report";
-type ScanDepth = "quick" | "standard" | "deep";
+type AppState = "input" | "pick-files" | "scanning" | "report";
 type Provider = "anthropic" | "openai";
 type Severity = "critical" | "high" | "medium" | "low" | "info";
 
@@ -137,45 +145,73 @@ const severityConfig: Record<
   { color: string; textColor: string; label: string; order: number }
 > = {
   critical: {
-    color: "bg-red-500/10 text-red-500 border-red-500/20",
-    textColor: "text-red-500",
+    color: "bg-red-700/10 text-red-700 border-red-700/20 dark:text-red-500 dark:border-red-500/20",
+    textColor: "text-red-700 dark:text-red-500",
     label: "Critical",
     order: 0,
   },
   high: {
-    color: "bg-orange-500/10 text-orange-500 border-orange-500/20",
-    textColor: "text-orange-500",
+    color: "bg-orange-600/10 text-orange-600 border-orange-600/20 dark:text-orange-400 dark:border-orange-400/20",
+    textColor: "text-orange-600 dark:text-orange-400",
     label: "High",
     order: 1,
   },
   medium: {
-    color: "bg-yellow-500/10 text-yellow-500 border-yellow-500/20",
-    textColor: "text-yellow-500",
+    color: "bg-yellow-600/10 text-yellow-600 border-yellow-600/20 dark:text-yellow-400 dark:border-yellow-400/20",
+    textColor: "text-yellow-600 dark:text-yellow-400",
     label: "Medium",
     order: 2,
   },
   low: {
-    color: "bg-blue-500/10 text-blue-500 border-blue-500/20",
-    textColor: "text-blue-500",
+    color: "bg-sky-600/10 text-sky-600 border-sky-600/20 dark:text-sky-400 dark:border-sky-400/20",
+    textColor: "text-sky-600 dark:text-sky-400",
     label: "Low",
     order: 3,
   },
   info: {
-    color: "bg-teal-500/10 text-teal-500 border-teal-500/20",
-    textColor: "text-teal-500",
+    color: "bg-blue-800/10 text-blue-800 border-blue-800/20 dark:text-blue-400 dark:border-blue-400/20",
+    textColor: "text-blue-800 dark:text-blue-400",
     label: "Info",
     order: 4,
   },
 };
 
-const depthConfig: Record<
-  ScanDepth,
-  { files: number; label: string; desc: string }
-> = {
-  quick: { files: 10, label: "Quick", desc: "~10 files" },
-  standard: { files: 30, label: "Standard", desc: "~30 files" },
-  deep: { files: Infinity, label: "Deep", desc: "Full codebase" },
-};
+// ---------------------------------------------------------------------------
+// File tree helpers
+// ---------------------------------------------------------------------------
+
+interface TreeNode {
+  name: string;
+  path: string;
+  children: Map<string, TreeNode>;
+  files: GitHubFile[];
+}
+
+function buildTree(files: GitHubFile[]): TreeNode {
+  const root: TreeNode = { name: "", path: "", children: new Map(), files: [] };
+  for (const file of files) {
+    const parts = file.path.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const dirName = parts[i];
+      const dirPath = parts.slice(0, i + 1).join("/");
+      if (!node.children.has(dirName)) {
+        node.children.set(dirName, { name: dirName, path: dirPath, children: new Map(), files: [] });
+      }
+      node = node.children.get(dirName)!;
+    }
+    node.files.push(file);
+  }
+  return root;
+}
+
+function getAllFilePaths(node: TreeNode): string[] {
+  const paths: string[] = node.files.map((f) => f.path);
+  for (const child of node.children.values()) {
+    paths.push(...getAllFilePaths(child));
+  }
+  return paths;
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -190,10 +226,16 @@ export default function Home() {
   const [apiKey, setApiKey] = useState("");
   const [provider, setProvider] = useState<Provider>("anthropic");
   const [model, setModel] = useState("claude-sonnet-4-20250514");
-  const [depth, setDepth] = useState<ScanDepth>("standard");
   const [showKey, setShowKey] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  // File picker state
+  const [availableFiles, setAvailableFiles] = useState<GitHubFile[]>([]);
+  const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+  const [fileTree, setFileTree] = useState<TreeNode | null>(null);
+  const [fetchedBranch, setFetchedBranch] = useState("");
 
   // Scan state
   const [repoInfo, setRepoInfo] = useState<{
@@ -205,11 +247,14 @@ export default function Home() {
   const [currentAnalysis, setCurrentAnalysis] = useState("");
   const [scanProgress, setScanProgress] = useState(0);
   const [scanComplete, setScanComplete] = useState(false);
+  const [paused, setPaused] = useState(false);
 
   // Refs
   const terminalRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const pauseRef = useRef(false);
+  const resumeRef = useRef<(() => void) | null>(null);
   const userScrolledSidebarRef = useRef(false);
   const sidebarScrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -232,9 +277,9 @@ export default function Home() {
   }, [currentFileIndex, scanComplete]);
 
   // --------------------------------------------------
-  // Start scan
+  // Step 1: Fetch repo files → show picker
   // --------------------------------------------------
-  const startScan = useCallback(async () => {
+  const fetchFiles = useCallback(async () => {
     setError(null);
     setLoading(true);
 
@@ -243,6 +288,13 @@ export default function Home() {
       setError(
         "Invalid GitHub URL. Try https://github.com/owner/repo or owner/repo",
       );
+      setLoading(false);
+      return;
+    }
+
+    // Validate owner/repo contain only safe characters
+    if (!/^[a-zA-Z0-9_.-]+$/.test(parsed.owner) || !/^[a-zA-Z0-9_.-]+$/.test(parsed.repo)) {
+      setError("Invalid repository owner or name.");
       setLoading(false);
       return;
     }
@@ -256,9 +308,10 @@ export default function Home() {
     try {
       const info = await fetchRepoInfo(parsed.owner, parsed.repo);
       setRepoInfo(parsed);
+      setFetchedBranch(info.defaultBranch);
 
       const tree = await fetchRepoTree(parsed.owner, parsed.repo, info.defaultBranch);
-      const files = filterScannableFiles(tree, depthConfig[depth].files);
+      const files = filterScannableFiles(tree, Infinity);
 
       if (files.length === 0) {
         setError("No scannable source files found in this repository.");
@@ -266,126 +319,297 @@ export default function Home() {
         return;
       }
 
-      const results: FileResult[] = files.map((f) => ({
-        path: f.path,
-        status: "pending" as const,
-        analysis: "",
-        findings: [],
-      }));
-
-      setFileResults(results);
-      setAppState("scanning");
+      setAvailableFiles(files);
+      setSelectedFiles(new Set(files.map((f) => f.path)));
+      setFileTree(buildTree(files));
+      setCollapsedDirs(new Set());
+      setAppState("pick-files");
       setLoading(false);
-      setScanComplete(false);
-      setCurrentFileIndex(0);
-
-      const abort = new AbortController();
-      abortRef.current = abort;
-
-      for (let i = 0; i < files.length; i++) {
-        if (abort.signal.aborted) break;
-
-        setCurrentFileIndex(i);
-        setCurrentAnalysis("");
-        setScanProgress((i / files.length) * 100);
-
-        setFileResults((prev) => {
-          const next = [...prev];
-          next[i] = { ...next[i], status: "scanning" };
-          return next;
-        });
-
-        try {
-          const content = await fetchFileContent(
-            parsed.owner,
-            parsed.repo,
-            info.defaultBranch,
-            files[i].path,
-          );
-
-          if (!content.trim()) {
-            setFileResults((prev) => {
-              const next = [...prev];
-              next[i] = {
-                ...next[i],
-                status: "done",
-                analysis: "Empty file — skipped.",
-              };
-              return next;
-            });
-            continue;
-          }
-
-          const res = await fetch("/api/analyze", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              fileContent: content.slice(0, 30_000),
-              filePath: files[i].path,
-              apiKey,
-              provider,
-              model,
-              repoContext: `${parsed.owner}/${parsed.repo}`,
-            }),
-            signal: abort.signal,
-          });
-
-          if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(errText || `API error: ${res.status}`);
-          }
-
-          const reader = res.body!.getReader();
-          const decoder = new TextDecoder();
-          let fullText = "";
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            fullText += decoder.decode(value, { stream: true });
-            setCurrentAnalysis(fullText);
-          }
-
-          const findings = parseFindingsFromText(fullText, files[i].path);
-
-          setFileResults((prev) => {
-            const next = [...prev];
-            next[i] = { ...next[i], status: "done", analysis: fullText, findings };
-            return next;
-          });
-        } catch (err: unknown) {
-          if (err instanceof Error && err.name === "AbortError") break;
-          const message =
-            err instanceof Error ? err.message : "Unknown error";
-          setFileResults((prev) => {
-            const next = [...prev];
-            next[i] = {
-              ...next[i],
-              status: "error",
-              analysis: `Error: ${message}`,
-            };
-            return next;
-          });
-        }
-      }
-
-      setScanProgress(100);
-      setScanComplete(true);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Unknown error";
       setError(message);
       setLoading(false);
     }
-  }, [repoUrl, apiKey, provider, model, depth]);
+  }, [repoUrl, apiKey]);
+
+  // --------------------------------------------------
+  // Step 2: Run scan on selected files
+  // --------------------------------------------------
+  const runScan = useCallback(async () => {
+    if (selectedFiles.size === 0 || !repoInfo) return;
+
+    const files = availableFiles.filter((f) => selectedFiles.has(f.path));
+
+    const results: FileResult[] = files.map((f) => ({
+      path: f.path,
+      status: "pending" as const,
+      analysis: "",
+      findings: [],
+    }));
+
+    setFileResults(results);
+    setAppState("scanning");
+    setScanComplete(false);
+    setCurrentFileIndex(0);
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+    pauseRef.current = false;
+    setPaused(false);
+
+    for (let i = 0; i < files.length; i++) {
+      if (abort.signal.aborted) break;
+
+      // Check if paused — wait until resumed
+      if (pauseRef.current) {
+        await new Promise<void>((resolve) => {
+          resumeRef.current = resolve;
+        });
+        resumeRef.current = null;
+        if (abort.signal.aborted) break;
+      }
+
+      setCurrentFileIndex(i);
+      setCurrentAnalysis("");
+      setScanProgress((i / files.length) * 100);
+
+      setFileResults((prev) => {
+        const next = [...prev];
+        next[i] = { ...next[i], status: "scanning" };
+        return next;
+      });
+
+      try {
+        const content = await fetchFileContent(
+          repoInfo.owner,
+          repoInfo.repo,
+          fetchedBranch,
+          files[i].path,
+        );
+
+        if (!content.trim()) {
+          setFileResults((prev) => {
+            const next = [...prev];
+            next[i] = {
+              ...next[i],
+              status: "done",
+              analysis: "Empty file — skipped.",
+            };
+            return next;
+          });
+          continue;
+        }
+
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileContent: content.slice(0, 30_000),
+            filePath: files[i].path,
+            apiKey,
+            provider,
+            model,
+            repoContext: `${repoInfo.owner}/${repoInfo.repo}`,
+          }),
+          signal: abort.signal,
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `API error: ${res.status}`);
+        }
+
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          fullText += decoder.decode(value, { stream: true });
+          setCurrentAnalysis(fullText);
+        }
+
+        const findings = parseFindingsFromText(fullText, files[i].path);
+
+        setFileResults((prev) => {
+          const next = [...prev];
+          next[i] = { ...next[i], status: "done", analysis: fullText, findings };
+          return next;
+        });
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") {
+          // If paused, revert current file to pending so it's retried on resume
+          if (pauseRef.current) {
+            setFileResults((prev) => {
+              const next = [...prev];
+              next[i] = { ...next[i], status: "pending", analysis: "" };
+              return next;
+            });
+          }
+          break;
+        }
+        const message =
+          err instanceof Error ? err.message : "Unknown error";
+        setFileResults((prev) => {
+          const next = [...prev];
+          next[i] = {
+            ...next[i],
+            status: "error",
+            analysis: `Error: ${message}`,
+          };
+          return next;
+        });
+      }
+    }
+
+    if (!pauseRef.current) {
+      setScanProgress(100);
+      setScanComplete(true);
+    }
+  }, [selectedFiles, availableFiles, repoInfo, fetchedBranch, apiKey, provider, model]);
 
   // --------------------------------------------------
   // Controls
   // --------------------------------------------------
 
-  const stopScan = useCallback(() => {
+  const pauseScan = useCallback(() => {
+    pauseRef.current = true;
+    setPaused(true);
+    // Abort the current in-flight request so we don't wait for it
     abortRef.current?.abort();
-    setScanComplete(true);
   }, []);
+
+  const resumeScan = useCallback(async () => {
+    pauseRef.current = false;
+    setPaused(false);
+
+    // If scan loop is waiting on the pause promise, release it
+    if (resumeRef.current) {
+      // Create a fresh AbortController for continued requests
+      const abort = new AbortController();
+      abortRef.current = abort;
+      resumeRef.current();
+      return;
+    }
+
+    // If the loop already exited (aborted mid-request), restart from where we left off
+    if (!repoInfo || !fetchedBranch) return;
+    const files = availableFiles.filter((f) => selectedFiles.has(f.path));
+
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    // Find the first file that isn't done
+    const startIndex = fileResults.findIndex(
+      (f) => f.status === "pending" || f.status === "scanning" || f.status === "error",
+    );
+    if (startIndex === -1) {
+      setScanProgress(100);
+      setScanComplete(true);
+      return;
+    }
+
+    for (let i = startIndex; i < files.length; i++) {
+      if (abort.signal.aborted) break;
+
+      if (pauseRef.current) {
+        await new Promise<void>((resolve) => {
+          resumeRef.current = resolve;
+        });
+        resumeRef.current = null;
+        if (abort.signal.aborted) break;
+      }
+
+      setCurrentFileIndex(i);
+      setCurrentAnalysis("");
+      setScanProgress((i / files.length) * 100);
+
+      setFileResults((prev) => {
+        const next = [...prev];
+        next[i] = { ...next[i], status: "scanning" };
+        return next;
+      });
+
+      try {
+        const content = await fetchFileContent(
+          repoInfo.owner,
+          repoInfo.repo,
+          fetchedBranch,
+          files[i].path,
+        );
+
+        if (!content.trim()) {
+          setFileResults((prev) => {
+            const next = [...prev];
+            next[i] = {
+              ...next[i],
+              status: "done",
+              analysis: "Empty file — skipped.",
+            };
+            return next;
+          });
+          continue;
+        }
+
+        const res = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileContent: content.slice(0, 30_000),
+            filePath: files[i].path,
+            apiKey,
+            provider,
+            model,
+            repoContext: `${repoInfo.owner}/${repoInfo.repo}`,
+          }),
+          signal: abort.signal,
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `API error: ${res.status}`);
+        }
+
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          fullText += decoder.decode(value, { stream: true });
+          setCurrentAnalysis(fullText);
+        }
+
+        const findings = parseFindingsFromText(fullText, files[i].path);
+
+        setFileResults((prev) => {
+          const next = [...prev];
+          next[i] = { ...next[i], status: "done", analysis: fullText, findings };
+          return next;
+        });
+      } catch (err: unknown) {
+        if (err instanceof Error && err.name === "AbortError") break;
+        const message =
+          err instanceof Error ? err.message : "Unknown error";
+        setFileResults((prev) => {
+          const next = [...prev];
+          next[i] = {
+            ...next[i],
+            status: "error",
+            analysis: `Error: ${message}`,
+          };
+          return next;
+        });
+      }
+    }
+
+    if (!pauseRef.current) {
+      setScanProgress(100);
+      setScanComplete(true);
+    }
+  }, [repoInfo, fetchedBranch, availableFiles, selectedFiles, fileResults, apiKey, provider, model]);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
@@ -394,7 +618,11 @@ export default function Home() {
     setCurrentAnalysis("");
     setScanProgress(0);
     setScanComplete(false);
+    setPaused(false);
     setError(null);
+    setAvailableFiles([]);
+    setSelectedFiles(new Set());
+    setFileTree(null);
   }, []);
 
   // --------------------------------------------------
@@ -559,7 +787,7 @@ export default function Home() {
                   placeholder="https://github.com/owner/repo"
                   value={repoUrl}
                   onChange={(e) => setRepoUrl(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && startScan()}
+                  onKeyDown={(e) => e.key === "Enter" && fetchFiles()}
                 />
               </div>
 
@@ -622,7 +850,7 @@ export default function Home() {
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     className="pr-10"
-                    onKeyDown={(e) => e.key === "Enter" && startScan()}
+                    onKeyDown={(e) => e.key === "Enter" && fetchFiles()}
                   />
                   <button
                     type="button"
@@ -637,41 +865,10 @@ export default function Home() {
                   </button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Your key is sent directly to{" "}
-                  {provider === "anthropic" ? "Anthropic" : "OpenAI"} and never
-                  stored.
+                  Your key is proxied through this app&apos;s server to{" "}
+                  {provider === "anthropic" ? "Anthropic" : "OpenAI"} (required
+                  for CORS). It is never stored or logged.
                 </p>
-              </div>
-
-              {/* Scan Depth */}
-              <div className="space-y-2">
-                <label className="text-sm font-medium flex items-center gap-2">
-                  <Search className="size-4" />
-                  Scan Depth
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {(
-                    Object.entries(depthConfig) as [
-                      ScanDepth,
-                      (typeof depthConfig)[ScanDepth],
-                    ][]
-                  ).map(([key, config]) => (
-                    <button
-                      key={key}
-                      onClick={() => setDepth(key)}
-                      className={`rounded-lg border p-3 text-center transition-colors ${
-                        depth === key
-                          ? "border-primary bg-primary/5 text-primary"
-                          : "border-border hover:border-primary/50"
-                      }`}
-                    >
-                      <div className="text-sm font-medium">{config.label}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {config.desc}
-                      </div>
-                    </button>
-                  ))}
-                </div>
               </div>
 
               {/* Error */}
@@ -685,18 +882,18 @@ export default function Home() {
               <Button
                 className="w-full"
                 size="lg"
-                onClick={startScan}
+                onClick={fetchFiles}
                 disabled={loading || !repoUrl.trim() || !apiKey.trim()}
               >
                 {loading ? (
                   <>
                     <Loader2 className="size-4 animate-spin" />
-                    Connecting...
+                    Fetching repository...
                   </>
                 ) : (
                   <>
-                    <Shield className="size-4" />
-                    Start Deep Dive
+                    <Search className="size-4" />
+                    Choose Files to Scan
                   </>
                 )}
               </Button>
@@ -721,6 +918,215 @@ export default function Home() {
   }
 
   // ====================================================================
+  // RENDER — File picker state
+  // ====================================================================
+
+  if (appState === "pick-files" && fileTree) {
+    const allPaths = availableFiles.map((f) => f.path);
+    const allSelected = selectedFiles.size === allPaths.length;
+
+    const toggleAll = (checked: boolean) => {
+      setSelectedFiles(checked ? new Set(allPaths) : new Set());
+    };
+
+    const toggleDir = (dirNode: TreeNode, checked: boolean) => {
+      const paths = getAllFilePaths(dirNode);
+      setSelectedFiles((prev) => {
+        const next = new Set(prev);
+        for (const p of paths) {
+          if (checked) next.add(p);
+          else next.delete(p);
+        }
+        return next;
+      });
+    };
+
+    const toggleFile = (path: string) => {
+      setSelectedFiles((prev) => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+    };
+
+    const toggleCollapse = (dirPath: string) => {
+      setCollapsedDirs((prev) => {
+        const next = new Set(prev);
+        if (next.has(dirPath)) next.delete(dirPath);
+        else next.add(dirPath);
+        return next;
+      });
+    };
+
+    const isDirChecked = (node: TreeNode): boolean | "indeterminate" => {
+      const paths = getAllFilePaths(node);
+      const selected = paths.filter((p) => selectedFiles.has(p)).length;
+      if (selected === 0) return false;
+      if (selected === paths.length) return true;
+      return "indeterminate";
+    };
+
+    const renderTree = (node: TreeNode, depth: number = 0) => {
+      const sortedDirs = [...node.children.entries()].sort((a, b) =>
+        a[0].localeCompare(b[0]),
+      );
+      const sortedFiles = [...node.files].sort((a, b) =>
+        a.path.localeCompare(b.path),
+      );
+
+      return (
+        <>
+          {sortedDirs.map(([name, child]) => {
+            const collapsed = collapsedDirs.has(child.path);
+            const checked = isDirChecked(child);
+            const fileCount = getAllFilePaths(child).length;
+            return (
+              <div key={child.path}>
+                <div
+                  className="flex items-center gap-1.5 py-1 hover:bg-muted/50 rounded-md px-1 cursor-pointer"
+                  style={{ paddingLeft: `${depth * 16 + 4}px` }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggleCollapse(child.path)}
+                    className="text-muted-foreground hover:text-foreground shrink-0"
+                  >
+                    {collapsed ? (
+                      <ChevronRight className="size-3.5" />
+                    ) : (
+                      <ChevronDown className="size-3.5" />
+                    )}
+                  </button>
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={(c) => toggleDir(child, !!c)}
+                    className="shrink-0"
+                  />
+                  {collapsed ? (
+                    <Folder className="size-3.5 text-muted-foreground shrink-0" />
+                  ) : (
+                    <FolderOpen className="size-3.5 text-muted-foreground shrink-0" />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => toggleCollapse(child.path)}
+                    className="text-sm truncate text-left"
+                  >
+                    {name}/
+                  </button>
+                  <span className="text-xs text-muted-foreground shrink-0">
+                    {fileCount}
+                  </span>
+                </div>
+                {!collapsed && renderTree(child, depth + 1)}
+              </div>
+            );
+          })}
+          {sortedFiles.map((file) => {
+            const fileName = file.path.split("/").pop() ?? file.path;
+            return (
+              <div
+                key={file.path}
+                className="flex items-center gap-1.5 py-1 hover:bg-muted/50 rounded-md px-1"
+                style={{ paddingLeft: `${depth * 16 + 24}px` }}
+              >
+                <Checkbox
+                  checked={selectedFiles.has(file.path)}
+                  onCheckedChange={() => toggleFile(file.path)}
+                  className="shrink-0"
+                />
+                <FileCode className="size-3.5 text-muted-foreground shrink-0" />
+                <span className="text-sm truncate" title={file.path}>
+                  {fileName}
+                </span>
+                <span className="text-xs text-muted-foreground shrink-0">
+                  {file.size > 1024
+                    ? `${(file.size / 1024).toFixed(1)}KB`
+                    : `${file.size}B`}
+                </span>
+              </div>
+            );
+          })}
+        </>
+      );
+    };
+
+    return (
+      <div className="flex min-h-[calc(100vh-3.5rem)] flex-col items-center justify-center p-4">
+        <div className="w-full max-w-2xl space-y-6">
+          <div className="text-center space-y-2">
+            <h1 className="text-2xl font-bold tracking-tight">
+              {repoInfo?.owner}/{repoInfo?.repo}
+            </h1>
+            <p className="text-muted-foreground text-sm">
+              {availableFiles.length} scannable files found — select which to
+              analyze
+            </p>
+          </div>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <FileCode className="size-4" />
+                  Files
+                  <Badge variant="secondary" className="ml-1">
+                    {selectedFiles.size}/{availableFiles.length}
+                  </Badge>
+                </CardTitle>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => toggleAll(false)}
+                    className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/50 transition-colors"
+                  >
+                    Deselect all
+                  </button>
+                  <label
+                    onClick={() => toggleAll(!allSelected)}
+                    className="flex items-center gap-2 rounded-md px-2 py-1 -mr-2 hover:bg-muted/50 transition-colors cursor-pointer"
+                  >
+                    <Checkbox
+                      checked={allSelected}
+                      onCheckedChange={(c) => toggleAll(!!c)}
+                    />
+                    <span className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+                      Deep Dive — Select All
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0 px-3 pb-3">
+              <div className="max-h-[50vh] overflow-y-auto space-y-0.5 rounded-md border p-2">
+                {renderTree(fileTree)}
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={reset} className="flex-1">
+              <RotateCcw className="size-4" />
+              Back
+            </Button>
+            <Button
+              className="flex-2"
+              size="lg"
+              onClick={runScan}
+              disabled={selectedFiles.size === 0}
+            >
+              <Shield className="size-4" />
+              Scan {selectedFiles.size} File{selectedFiles.size !== 1 ? "s" : ""}
+            </Button>
+          </div>
+
+        </div>
+      </div>
+    );
+  }
+
+  // ====================================================================
   // RENDER — Scanning / report state
   // ====================================================================
 
@@ -739,6 +1145,11 @@ export default function Home() {
                   <CheckCircle2 className="size-3" />
                   Complete
                 </Badge>
+              ) : paused ? (
+                <Badge variant="secondary" className="gap-1">
+                  <Pause className="size-3" />
+                  Paused
+                </Badge>
               ) : (
                 <Badge variant="secondary" className="gap-1">
                   <Loader2 className="size-3 animate-spin" />
@@ -754,12 +1165,19 @@ export default function Home() {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {!scanComplete && (
-              <Button variant="outline" size="sm" onClick={stopScan}>
-                Stop
+            {!scanComplete && !paused && (
+              <Button variant="outline" size="sm" onClick={pauseScan}>
+                <Pause className="size-3.5" />
+                Pause
               </Button>
             )}
-            {scanComplete && (
+            {paused && !scanComplete && (
+              <Button variant="outline" size="sm" onClick={resumeScan}>
+                <Play className="size-3.5" />
+                Resume
+              </Button>
+            )}
+            {(scanComplete || paused) && (
               <>
                 <Button
                   variant="outline"
@@ -900,7 +1318,9 @@ export default function Home() {
                       <div className="size-2.5 rounded-full bg-green-500/80" />
                     </div>
                     <CardDescription className="text-xs font-mono">
-                      {fileResults[currentFileIndex]?.path ?? "Initializing..."}
+                      {paused
+                        ? "Paused"
+                        : fileResults[currentFileIndex]?.path ?? "Initializing..."}
                     </CardDescription>
                   </div>
                 </CardHeader>
@@ -911,10 +1331,10 @@ export default function Home() {
                   >
                     {currentAnalysis || (
                       <span className="text-muted-foreground animate-pulse">
-                        Analyzing file...
+                        {paused ? "Paused — click Resume to continue" : "Analyzing file..."}
                       </span>
                     )}
-                    {!scanComplete && (
+                    {!scanComplete && !paused && (
                       <span className="inline-block w-1.5 h-4 bg-green-400 ml-0.5 animate-pulse" />
                     )}
                   </div>
@@ -957,7 +1377,7 @@ export default function Home() {
                         .map((finding, i) => (
                           <div
                             key={`${finding.file}-${finding.title}-${i}`}
-                            className="rounded-lg border p-4 space-y-2"
+                            className="rounded-lg border p-4 space-y-2 min-w-0 overflow-hidden"
                           >
                             <div className="flex items-start gap-2">
                               <Badge

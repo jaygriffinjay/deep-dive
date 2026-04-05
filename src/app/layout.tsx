@@ -10,7 +10,7 @@ import "./globals.css";
 const faviconHref =
   siteConfig.logo.svg ??
   siteConfig.logo.png ??
-  `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>${siteConfig.logo.emoji}</text></svg>`;
+  `data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>${siteConfig.logo.emoji}</text></svg>`)}`;
 
 export const metadata: Metadata = {
   // Makes relative URLs in metadata absolute (required for og:image etc.)

@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSanitize from "rehype-sanitize";
 import NextImage from "next/image";
 import { cn } from "@/lib/utils";
 import {
@@ -27,12 +28,13 @@ export default function MarkdownRenderer({ content, className }: MarkdownRendere
     <div className={cn(styles.root, className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
         components={{
-          h1: ({ children }) => <H1>{children}</H1>,
-          h2: ({ children }) => <H2>{children}</H2>,
-          h3: ({ children }) => <H3>{children}</H3>,
-          h4: ({ children }) => <H4>{children}</H4>,
-          h5: ({ children }) => <H5>{children}</H5>,
+          h1: ({ children }) => <H3>{children}</H3>,
+          h2: ({ children }) => <H4>{children}</H4>,
+          h3: ({ children }) => <H5>{children}</H5>,
+          h4: ({ children }) => <H6>{children}</H6>,
+          h5: ({ children }) => <H6>{children}</H6>,
           h6: ({ children }) => <H6>{children}</H6>,
           p: ({ children }) => <Paragraph>{children}</Paragraph>,
           blockquote: ({ children }) => <Blockquote>{children}</Blockquote>,
@@ -41,15 +43,18 @@ export default function MarkdownRenderer({ content, className }: MarkdownRendere
           ol: ({ children }) => <List ordered>{children}</List>,
           li: ({ children }) => <ListItem>{children}</ListItem>,
           a: ({ href, children }) => (
-            <Link href={href ?? "#"} target={href?.startsWith("http") ? "_blank" : undefined}>
+            <Link href={href ?? "#"} target={href?.startsWith("http") ? "_blank" : undefined} rel={href?.startsWith("http") ? "noopener noreferrer" : undefined}>
               {children}
             </Link>
           ),
           strong: ({ children }) => <Bold>{children}</Bold>,
           em: ({ children }) => <Italic>{children}</Italic>,
           del: ({ children }) => <Strikethrough>{children}</Strikethrough>,
-          img: ({ src, alt }) =>
-            typeof src !== "string" ? null : (
+          img: ({ src, alt }) => {
+            if (typeof src !== "string") return null;
+            // Only allow http(s) image URLs to prevent SSRF
+            if (!/^https?:\/\//i.test(src)) return null;
+            return (
               <span className={styles.imageWrapper}>
                 <NextImage
                   src={src}
@@ -61,7 +66,8 @@ export default function MarkdownRenderer({ content, className }: MarkdownRendere
                 />
                 {alt && <span className={styles.imageCaption}>{alt}</span>}
               </span>
-            ),
+            );
+          },
           pre: ({ children }) => {
             const child = Array.isArray(children) ? children[0] : children;
             const props = (child as React.ReactElement<{ className?: string; children?: React.ReactNode }>)?.props;

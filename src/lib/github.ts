@@ -18,7 +18,7 @@ export function parseRepoUrl(
 
   // https://github.com/owner/repo or github.com/owner/repo
   const urlMatch = cleaned.match(
-    /(?:https?:\/\/)?github\.com\/([^/]+)\/([^/]+)/,
+    /^(?:https?:\/\/)?github\.com\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)$/,
   );
   if (urlMatch) return { owner: urlMatch[1], repo: urlMatch[2] };
 
@@ -80,8 +80,9 @@ export async function fetchFileContent(
   branch: string,
   path: string,
 ): Promise<string> {
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
   const res = await fetch(
-    `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/${path}`,
+    `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/${encodedPath}`,
   );
   if (!res.ok) throw new Error(`Failed to fetch file: ${path}`);
   return res.text();

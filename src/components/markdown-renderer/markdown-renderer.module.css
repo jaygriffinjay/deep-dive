@@ -2,7 +2,7 @@
 
 /* outer wrapper — vertical rhythm between all markdown block elements */
 .root {
-  @apply flex flex-col gap-4;
+  @apply flex flex-col gap-4 min-w-0 overflow-hidden;
 }
 
 /* horizontal rule */

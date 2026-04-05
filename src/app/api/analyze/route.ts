@@ -2,12 +2,57 @@ import { NextRequest } from "next/server";
 
 export const runtime = "edge";
 
+// ---------------------------------------------------------------------------
+// Rate limiting (in-memory, per-IP, resets on deploy)
+// ---------------------------------------------------------------------------
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 30; // requests per window
+
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
+    return false;
+  }
+  entry.count++;
+  return entry.count > RATE_LIMIT_MAX;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const MAX_FILE_CONTENT_BYTES = 100 * 1024; // 100 KB
+
+/** Return a safe error message without leaking upstream API account details */
+function sanitizeUpstreamError(status: number, provider: string): string {
+  if (status === 401) return `Invalid ${provider} API key.`;
+  if (status === 403) return `${provider} API key does not have access to this model.`;
+  if (status === 429) return `${provider} rate limit exceeded. Wait a moment and try again.`;
+  if (status === 500 || status === 502 || status === 503)
+    return `${provider} is temporarily unavailable. Try again shortly.`;
+  return `${provider} returned an error (${status}).`;
+}
+
 export async function POST(req: NextRequest) {
+  // --- Rate limiting ---
+  const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+  if (isRateLimited(ip)) {
+    return new Response("Rate limit exceeded. Try again shortly.", { status: 429 });
+  }
+
   const body = await req.json();
   const { fileContent, filePath, apiKey, provider, model, repoContext } = body;
 
   if (!apiKey || !fileContent || !filePath) {
     return new Response("Missing required fields", { status: 400 });
+  }
+
+  // --- Payload size limit ---
+  if (new TextEncoder().encode(fileContent).byteLength > MAX_FILE_CONTENT_BYTES) {
+    return new Response("File content exceeds 100 KB limit.", { status: 413 });
   }
 
   const systemPrompt = `You are a senior security researcher performing a thorough source code audit. You are an expert at finding security vulnerabilities, logic bugs, and potential exploits.
@@ -42,6 +87,20 @@ ${fileContent}
 
 Analyze this file for security vulnerabilities.`;
 
+  // --- Validate provider & model ---
+  if (provider !== "anthropic" && provider !== "openai") {
+    return new Response("Invalid provider.", { status: 400 });
+  }
+
+  const ALLOWED_MODELS = new Set([
+    "claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250514",
+    "claude-sonnet-4-20250514", "claude-haiku-4-5",
+    "gpt-4o", "gpt-4o-mini", "o3", "o4-mini",
+  ]);
+  if (model && !ALLOWED_MODELS.has(model)) {
+    return new Response("Invalid model.", { status: 400 });
+  }
+
   if (provider === "anthropic") {
     return proxyAnthropic(apiKey, model || "claude-sonnet-4-6", systemPrompt, userPrompt);
   }
@@ -70,8 +129,7 @@ async function proxyAnthropic(apiKey: string, model: string, system: string, use
   });
 
   if (!res.ok) {
-    const error = await res.text();
-    return new Response(error, { status: res.status });
+    return new Response(sanitizeUpstreamError(res.status, "Anthropic"), { status: res.status });
   }
 
   return new Response(transformAnthropicStream(res.body!), {
@@ -142,8 +200,7 @@ async function proxyOpenAI(apiKey: string, model: string, system: string, user: 
   });
 
   if (!res.ok) {
-    const error = await res.text();
-    return new Response(error, { status: res.status });
+    return new Response(sanitizeUpstreamError(res.status, "OpenAI"), { status: res.status });
   }
 
   return new Response(transformOpenAIStream(res.body!), {
