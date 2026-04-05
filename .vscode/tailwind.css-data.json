@@ -1,0 +1,37 @@
+{
+  "version": 1.1,
+  "atDirectives": [
+    {
+      "name": "@theme",
+      "description": "Tailwind v4: defines theme tokens inline in CSS."
+    },
+    {
+      "name": "@custom-variant",
+      "description": "Tailwind v4: defines a custom variant (e.g. dark mode selector)."
+    },
+    {
+      "name": "@apply",
+      "description": "Tailwind: applies utility classes inside a CSS rule."
+    },
+    {
+      "name": "@layer",
+      "description": "Tailwind: registers styles in a named cascade layer."
+    },
+    {
+      "name": "@variant",
+      "description": "Tailwind v4: applies a variant inside a CSS rule."
+    },
+    {
+      "name": "@utility",
+      "description": "Tailwind v4: defines a custom utility class."
+    },
+    {
+      "name": "@source",
+      "description": "Tailwind v4: specifies a source path for content scanning."
+    },
+    {
+      "name": "@reference",
+      "description": "Tailwind v4: imports another CSS file as a reference for @apply without emitting its styles."
+    }
+  ]
+}

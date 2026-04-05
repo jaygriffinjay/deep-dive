@@ -1,0 +1,6 @@
+@reference "../../app/globals.css";
+
+.container {
+  @apply mx-auto w-full px-4 mt-16 mb-80 max-sm:mb-48;
+  max-width: 640px;
+}

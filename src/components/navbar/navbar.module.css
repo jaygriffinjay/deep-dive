@@ -1,0 +1,61 @@
+@reference "../../app/globals.css";
+
+/* ─── Navbar (index.tsx) ─────────────────────────────────────── */
+
+/* the full-width sticky bar that spans the top of the page */
+.header {
+  @apply border-border/40 bg-background/80 sticky top-0 z-40 border-b backdrop-blur-md;
+}
+
+/* width-constrained flex row inside the header */
+.inner {
+  @apply mx-auto flex h-14 max-w-[640px] items-center justify-between px-4;
+}
+
+/* logo image + site name, side by side */
+.logoWrapper {
+  @apply flex items-center gap-2.5;
+}
+
+/* logo image */
+.logoImg {
+  @apply size-7 rounded-md object-contain;
+}
+
+/* emoji fallback when no logo image is set */
+.logoEmoji {
+  @apply text-xl leading-none;
+}
+
+/* site name text next to the logo */
+.siteTitle {
+  @apply text-foreground text-sm font-semibold tracking-tight;
+  font-family: var(--font-geist-sans);
+}
+
+/* ─── NavMenu (nav-menu.tsx) ─────────────────────────────────── */
+
+/* ghost icon button that opens the dropdown */
+.menuTrigger {
+  @apply size-9 text-muted-foreground hover:text-foreground data-[state=open]:text-foreground hover:bg-transparent! focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0;
+}
+
+/* hamburger icon inside the trigger button */
+.menuIcon {
+  @apply size-5;
+}
+
+/* the dropdown panel */
+.dropdownContent {
+  @apply w-48;
+}
+
+/* theme toggle row: label on left, icon on right */
+.themeToggleItem {
+  @apply flex items-center justify-between;
+}
+
+/* sun/moon icon in the theme toggle */
+.themeIcon {
+  @apply size-4;
+}
