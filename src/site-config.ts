@@ -4,9 +4,9 @@
  * tab title, favicon, navbar logo, og:image, apple touch icon, twitter card.
  */
 export const siteConfig = {
-  name: "CHANGEME",
-  description: "CHANGEME",
-  author: "CHANGEME",
+  name: "Deep Dive",
+  description: "AI-powered security audit for any GitHub repo. BYO API key.",
+  author: "Deep Dive",
 
   // Production URL — reads from NEXT_PUBLIC_SITE_URL env var.
   // Set NEXT_PUBLIC_SITE_URL=https://yourapp.com in your host's env vars (e.g. Vercel).
@@ -15,7 +15,7 @@ export const siteConfig = {
 
   logo: {
     // Emoji fallback — always shown if no svg/png provided.
-    emoji: "😄",
+    emoji: "�",
     // Optional: path to logo SVG in /public (e.g. "/logo.svg")
     svg: undefined as string | undefined,
     // Optional: path to logo PNG in /public (e.g. "/logo.png")

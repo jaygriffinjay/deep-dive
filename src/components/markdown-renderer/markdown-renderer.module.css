@@ -1,0 +1,51 @@
+@reference "../../app/globals.css";
+
+/* outer wrapper — vertical rhythm between all markdown block elements */
+.root {
+  @apply flex flex-col gap-4;
+}
+
+/* horizontal rule */
+.divider {
+  @apply my-2;
+}
+
+/* image block wrapper */
+.imageWrapper {
+  @apply block my-6;
+}
+
+/* responsive image */
+.image {
+  @apply w-full h-auto rounded-md;
+}
+
+/* alt text shown as caption below image */
+.imageCaption {
+  @apply block mt-2 text-sm text-muted-foreground italic;
+}
+
+/* fenced code block */
+.pre {
+  @apply bg-muted rounded-md p-4 overflow-x-auto text-sm font-mono;
+}
+
+/* table scroll wrapper */
+.tableWrapper {
+  @apply w-full overflow-x-auto;
+}
+
+/* table */
+.table {
+  @apply w-full border-collapse text-sm;
+}
+
+/* table header cell */
+.th {
+  @apply border border-border px-4 py-2 text-left font-semibold bg-muted;
+}
+
+/* table data cell */
+.td {
+  @apply border border-border px-4 py-2;
+}
